@@ -335,6 +335,71 @@ CREATE TABLE IF NOT EXISTS dossier_events (
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_events_dossier ON dossier_events(dossier_id, id);
+
+CREATE TABLE IF NOT EXISTS patent_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    jurisdiction TEXT NOT NULL,
+    application_number TEXT NOT NULL,
+    application_date TEXT NOT NULL,
+    priority_date TEXT,
+    publication_date TEXT,
+    grant_date TEXT,
+    owner_user_id INTEGER REFERENCES users(id),
+    state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','closed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(jurisdiction, application_number)
+);
+
+CREATE TABLE IF NOT EXISTS deadline_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_key TEXT NOT NULL UNIQUE,
+    case_id INTEGER NOT NULL REFERENCES patent_cases(id),
+    jurisdiction TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    kind_label TEXT NOT NULL,
+    occurrence INTEGER NOT NULL,
+    occurrence_label TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    original_due_date TEXT NOT NULL,
+    base_due_date TEXT NOT NULL,
+    extension_days INTEGER NOT NULL DEFAULT 0 CHECK(extension_days >= 0),
+    due_date TEXT NOT NULL,
+    lead_days INTEGER NOT NULL DEFAULT 0,
+    remind_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','done','cancelled')),
+    rule_code TEXT NOT NULL,
+    rule_version INTEGER NOT NULL,
+    explanation_json TEXT NOT NULL,
+    payment_voucher TEXT,
+    resolution TEXT,
+    claimed_by TEXT,
+    claimed_at TEXT,
+    claim_expires_at TEXT,
+    completed_at TEXT,
+    completed_by INTEGER REFERENCES users(id),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deadline_nodes_case ON deadline_nodes(case_id, due_date);
+CREATE INDEX IF NOT EXISTS idx_deadline_nodes_claim ON deadline_nodes(status, remind_at);
+
+CREATE TABLE IF NOT EXISTS deadline_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL REFERENCES deadline_nodes(id),
+    adjustment_type TEXT NOT NULL CHECK(adjustment_type IN ('extension','payment','reschedule')),
+    actor_user_id INTEGER REFERENCES users(id),
+    days INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    voucher_no TEXT,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deadline_adjustments_node ON deadline_adjustments(node_id, id);
 """
 
 PERMISSIONS = [
@@ -353,6 +418,9 @@ PERMISSIONS = [
     ("approvals.decide", "审批高风险操作", "approvals", "decide"),
     ("vaults.read_sensitive", "查看精确密级库位", "vaults", "read_sensitive"),
     ("incidents.manage", "管理泄密事件", "incidents", "manage"),
+    ("deadlines.read", "查看专利期限节点", "deadlines", "read"),
+    ("deadlines.write", "维护期限案件、延期与缴费登记", "deadlines", "write"),
+    ("deadlines.claim", "领取与办结期限节点", "deadlines", "claim"),
 ]
 
 
@@ -432,10 +500,11 @@ def init_db() -> None:
             "dossier_manager": [
                 "dossiers.read", "dossiers.write", "dossiers.disclose", "dossiers.dispose",
                 "access_loans.manage", "inventory_review.manage", "incidents.manage",
+                "deadlines.read", "deadlines.write", "deadlines.claim",
             ],
             "researcher": ["dossiers.read", "dossiers.disclose"],
             "approver": ["dossiers.read", "approvals.decide"],
-            "auditor": ["dossiers.read", "audit.read"],
+            "auditor": ["dossiers.read", "audit.read", "deadlines.read"],
         }
         for role_code, permission_codes in role_permissions.items():
             role_id = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()[0]
