@@ -14,6 +14,26 @@
 - 双人审批：合规处置、敏感库位解密等高风险操作要求申请人与审批人分离，并累计不同审批人的决定。
 - 泄密事件追踪：事件可以关联档案或移交批次，保存严重度、调查状态和处置结果。
 - 审计与任务：关键身份及业务操作留痕，后台任务支持去重、领取与完成。
+- 专利期限服务：按辖区（CN/US/EP）规则从申请日、优先权日、公开日、授权日生成优先权、国家阶段、公布与逐年年费节点；周末/假日顺延；区分待确认、已处理、逾期三种状态；支持人工确认、延期、缴费凭证登记与显式重开；提醒调度可恢复、幂等、不重复，逾期判定按辖区时区的本地历法日，跨时区不会把同一天误判为逾期；支持按任意时间点重算并追溯规则条款来源。
+
+## 专利期限服务
+
+- 规则引擎位于 `app/deadlines/rules.py`，规则集带版本号（`RULES_VERSION`），节点留存生成时的规则代码、条款来源与逐步解释。
+- 日期全程使用辖区本地历法日：UTC 时刻仅在判定逾期时换算到辖区时区取日，期满当天不会因观测者时区而提前判逾期。
+- 提醒通过既有 `background_jobs` 机制调度：去重键含节点、提前天数与排程代次，并有 `deadline_reminder_dispatches` 唯一约束兜底；重复登记、重复重算、重复恢复都不会产生第二条提醒。
+- 已处理（缴费）节点在任何重算中保持关闭，旧提醒任务触发时只空跑；只有显式“重开”才会恢复跟踪。
+- 服务重启时启动钩子自动调用恢复；也可由 cron 执行：
+
+```bash
+python -m app.cli deadlines-recover   # 补齐未完成节点的提醒排程（幂等）
+python -m app.cli deadlines-dispatch  # 领取并发送到期提醒（可反复调用）
+python -m app.cli deadlines-sweep     # 按辖区本地日把过期节点标记为逾期
+```
+
+主要接口：`POST /api/deadlines/applications`、`PATCH .../anchors`、`POST .../recompute`、
+`GET .../preview?as_of=YYYY-MM-DD`、`GET /api/deadlines/nodes`、
+`POST /api/deadlines/nodes/{id}/confirm|extend|payment|reopen`、
+`GET /api/deadlines/rules/{rule_code}`。
 
 ## 运行环境
 

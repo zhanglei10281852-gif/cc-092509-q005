@@ -335,6 +335,80 @@ CREATE TABLE IF NOT EXISTS dossier_events (
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_events_dossier ON dossier_events(dossier_id, id);
+
+CREATE TABLE IF NOT EXISTS patent_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_code TEXT NOT NULL UNIQUE,
+    dossier_id INTEGER REFERENCES dossiers(id),
+    jurisdiction TEXT NOT NULL CHECK(jurisdiction IN ('CN','US','EP')),
+    application_number TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    filing_date TEXT NOT NULL,
+    priority_date TEXT,
+    publication_date TEXT,
+    grant_date TEXT,
+    annuities_paid INTEGER NOT NULL DEFAULT 0 CHECK(annuities_paid >= 0),
+    rules_version TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(jurisdiction, application_number)
+);
+
+CREATE TABLE IF NOT EXISTS deadline_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL REFERENCES patent_applications(id) ON DELETE CASCADE,
+    node_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    original_due_date TEXT NOT NULL,
+    nominal_due_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','handled','overdue')),
+    sequence_no INTEGER,
+    rule_code TEXT NOT NULL,
+    rule_source TEXT NOT NULL,
+    rules_version TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    lead_days_json TEXT NOT NULL DEFAULT '[30,7,0]',
+    confirmed_at TEXT,
+    confirmed_by INTEGER REFERENCES users(id),
+    handled_at TEXT,
+    handled_by INTEGER REFERENCES users(id),
+    extension_count INTEGER NOT NULL DEFAULT 0 CHECK(extension_count >= 0),
+    schedule_generation INTEGER NOT NULL DEFAULT 0 CHECK(schedule_generation >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(application_id, node_key)
+);
+CREATE INDEX IF NOT EXISTS idx_deadline_nodes_status ON deadline_nodes(status, due_date);
+CREATE INDEX IF NOT EXISTS idx_deadline_nodes_app ON deadline_nodes(application_id);
+
+CREATE TABLE IF NOT EXISTS deadline_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL REFERENCES deadline_nodes(id) ON DELETE CASCADE,
+    application_id INTEGER NOT NULL REFERENCES patent_applications(id) ON DELETE CASCADE,
+    action_type TEXT NOT NULL CHECK(action_type IN ('confirm','extend','payment','reopen')),
+    previous_due_date TEXT,
+    new_due_date TEXT,
+    evidence_reference TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    actor_user_id INTEGER REFERENCES users(id),
+    actor_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deadline_actions_node ON deadline_actions(node_id, id);
+CREATE TABLE IF NOT EXISTS deadline_reminder_dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL REFERENCES deadline_nodes(id) ON DELETE CASCADE,
+    lead_days INTEGER NOT NULL,
+    scheduled_due_date TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES background_jobs(id),
+    dispatched_at TEXT,
+    channel TEXT NOT NULL DEFAULT 'dashboard',
+    schedule_generation INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(node_id, lead_days, schedule_generation)
+);
 """
 
 PERMISSIONS = [
@@ -353,6 +427,8 @@ PERMISSIONS = [
     ("approvals.decide", "审批高风险操作", "approvals", "decide"),
     ("vaults.read_sensitive", "查看精确密级库位", "vaults", "read_sensitive"),
     ("incidents.manage", "管理泄密事件", "incidents", "manage"),
+    ("deadlines.read", "查看专利期限", "deadlines", "read"),
+    ("deadlines.write", "维护专利期限", "deadlines", "write"),
 ]
 
 
@@ -432,10 +508,11 @@ def init_db() -> None:
             "dossier_manager": [
                 "dossiers.read", "dossiers.write", "dossiers.disclose", "dossiers.dispose",
                 "access_loans.manage", "inventory_review.manage", "incidents.manage",
+                "deadlines.read", "deadlines.write",
             ],
             "researcher": ["dossiers.read", "dossiers.disclose"],
             "approver": ["dossiers.read", "approvals.decide"],
-            "auditor": ["dossiers.read", "audit.read"],
+            "auditor": ["dossiers.read", "audit.read", "deadlines.read"],
         }
         for role_code, permission_codes in role_permissions.items():
             role_id = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()[0]
